@@ -24,8 +24,11 @@ def opensubtitlesProxy():
 ####################################################################################################
 def fetchSubtitles(proxy, token, part, media_id='', imdbID=''):
 
-  # !!!
-  # We need a way to remove all the 'old' subtitles for this part, downloaded earlier by this Agent
+  # Remove(?) previously downloaded OS subs
+  for l in part.subtitles:
+    Log(" LANG : %s" % l)
+    part.subtitles[l].validate_keys([])
+
   # !!!
 
 
