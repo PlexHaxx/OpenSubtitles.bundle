@@ -22,43 +22,45 @@ def opensubtitlesProxy():
   return (proxy, token)
 
 ####################################################################################################
-def fetchSubtitles(proxy, token, part, media_id='', imdbID=''):
+def fetchSubtitles(proxy, token, part, media_id, imdbID=None):
 
-  # Remove(?) previously downloaded OS subs
-  for l in part.subtitles:
-    Log(" LANG : %s" % l)
-    part.subtitles[l].validate_keys([])
-
-  # !!!
-
-
-  langList = [Prefs['langPref1']]
+  langList_os = [Prefs['langPref1']]
+  langList = [Locale.Language.Match(Prefs['langPref1'])]
 
   if Prefs['langPref2'] != 'None' and Prefs['langPref1'] != Prefs['langPref2']:
-    langList.append(Prefs['langPref2'])
+    langList_os.append(Prefs['langPref2'])
+    langList.append(Locale.Language.Match(Prefs['langPref2']))
+
+  # Remove all subs from languages no longer set in the agent's prefs
+  for l in part.subtitles:
+    if l not in langList:
+      part.subtitles[l].validate_keys([])
 
 
   # Grab metadata for current library item
   xml_tree = XML.ElementFromURL('http://localhost:32400/library/metadata/%s/tree' % media_id, cacheTime=0)
 
-  for l in langList:
+  for l in langList_os:
 
-    # Skip lookup for this language if we already have a sidecar subtitle in this language
+    valid_names = list()
+
+    # Skip lookup for this language if we already have a sidecar or embedded subtitle in this language
     if len(xml_tree.xpath('//MediaStream[@type="3" and not(starts-with(@url, "media://")) and @language="%s"]' % l)) > 0:
-      Log('Subtitle for language "%s" already present, skipping' % l)
+      Log('Skipping: sidecar or embedded subtitle already present for language %s' % l)
       continue
 
 
+    subtitleResponse = False
 
+    if part.openSubtitleHash != '':
+      Log('Looking for match for GUID %s and size %d' % (part.openSubtitleHash, part.size))
+      subtitleResponse = proxy.SearchSubtitles(token,[{'sublanguageid':l, 'moviehash':part.openSubtitleHash, 'moviebytesize':str(part.size)}])['data']
+      #Log('hash/size search result: ')
+      #Log(subtitleResponse)
 
-    Log('Looking for match for GUID %s and size %d' % (part.openSubtitleHash, part.size))
-    subtitleResponse = proxy.SearchSubtitles(token,[{'sublanguageid':l, 'moviehash':part.openSubtitleHash, 'moviebytesize':str(part.size)}])['data']
-    #Log('hash/size search result: ')
-    #Log(subtitleResponse)
-
-    if subtitleResponse == False and imdbID != '': #let's try the imdbID, if we have one...
-      subtitleResponse = proxy.SearchSubtitles(token,[{'sublanguageid':l, 'imdbid':imdbID}])['data']
+    if subtitleResponse == False and imdbID: #let's try the imdbID, if we have one...
       Log('Found nothing via hash, trying search with imdbid: %s' % imdbID)
+      subtitleResponse = proxy.SearchSubtitles(token,[{'sublanguageid':l, 'imdbid':imdbID}])['data']
       #Log(subtitleResponse)
 
     if subtitleResponse != False:
@@ -72,15 +74,15 @@ def fetchSubtitles(proxy, token, part, media_id='', imdbID=''):
       # NEW
       xml_tree = XML.ElementFromURL('http://localhost:32400/library/metadata/%s' % media_id, cacheTime=0)
 
-      video_resolution = xml_tree.xpath('//Media/@videoResolution')[0]
-      Log(video_resolution)
-      is_hd = video_resolution >= 720
-      Log(is_hd)
-      video_frame_rate = xml_tree.xpath('//Media/@videoFrameRate')[0]
-      Log(video_frame_rate)
-
-
-
+      try:
+        video_resolution = xml_tree.xpath('//Media/@videoResolution')[0]
+        Log(video_resolution)
+        is_hd = video_resolution >= 720
+        Log(is_hd)
+        video_frame_rate = xml_tree.xpath('//Media/@videoFrameRate')[0]
+        Log(video_frame_rate)
+      except:
+        pass
 
       # /NEW
 
@@ -88,12 +90,21 @@ def fetchSubtitles(proxy, token, part, media_id='', imdbID=''):
       st = sorted(subtitleResponse, key=lambda k: int(k['SubDownloadsCnt']), reverse=True)[0] #most downloaded subtitle file for current language
 
       subUrl = st['SubDownloadLink']
+      valid_names.append(subUrl)
+
+      if subUrl in part.subtitles[Locale.Language.Match(l)]:
+        # No need to re-download good subtitle, we have this one already
+        continue
+
       subGz = HTTP.Request(subUrl, headers={'Accept-Encoding':'gzip'}).content
       subData = Archive.GzipDecompress(subGz)
       part.subtitles[Locale.Language.Match(st['SubLanguageID'])][subUrl] = Proxy.Media(subData, ext=st['SubFormat'])
 
     else:
       Log('No subtitles available for language %s' % l)
+
+    # Remove old subtitles (for this part/language)
+    part.subtitles[Locale.Language.Match(l)].validate_keys(valid_names)
 
 ####################################################################################################
 class OpenSubtitlesAgentMovies(Agent.Movies):
@@ -143,4 +154,4 @@ class OpenSubtitlesAgentTV(Agent.TV_Shows):
         for e in media.seasons[s].episodes:
           for i in media.seasons[s].episodes[e].items:
             for part in i.parts:
-              fetchSubtitles(proxy, token, part)
+              fetchSubtitles(proxy, token, part, media.id)
